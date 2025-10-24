@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# --- prerequisites -----------------------------------------------------------
 need() { command -v "$1" >/dev/null 2>&1; }
 
 if ! need curl; then
@@ -14,13 +13,11 @@ if ! need unzip; then
   apt-get update -y && apt-get install -y unzip
 fi
 
-# Some environments lack awk; try to ensure we have one
 if ! need awk; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get install -y gawk || apt-get install -y awk || true
 fi
 
-# --- config ------------------------------------------------------------------
 REPO_OWNER="ReyadWeb"
 REPO_NAME="erpnext-manager"
 REF="main"
@@ -28,7 +25,6 @@ REF="main"
 ZIP_URL_PUBLIC="https://github.com/${REPO_OWNER}/${REPO_NAME}/zipball/${REF}"
 ZIP_URL_PRIVATE="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/zipball/${REF}"
 
-# Try to obtain a token automatically for private repo access
 GHTOKEN="${GHTOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-$(command -v gh >/dev/null 2>&1 && gh auth token || true)}}}"
 
 TMP="$(mktemp -d)"
@@ -36,30 +32,30 @@ cleanup(){ rm -rf "$TMP"; }
 trap cleanup EXIT
 
 download_zip() {
-  # 1) Try public zip (works if repo is public now or later)
   if curl -fsSL -o "$TMP/repo.zip" "$ZIP_URL_PUBLIC"; then
+    echo "Downloaded public ZIP."
     return 0
   fi
 
-  # 2) Private fallback: ensure we have a token (prompt if missing)
-  if [[ -z "$GHTOKEN" ]]; then
+  if [[ -z "${GHTOKEN:-}" ]] then
     echo "Private repo detected: ${REPO_OWNER}/${REPO_NAME}"
     read -s -p "GitHub token (fine-grained; Repository contents: Read): " GHTOKEN
     echo
   fi
 
-  # 3) Download via API with Authorization header
-  curl -fsSL -H "Authorization: Bearer ${GHTOKEN}" -L "$ZIP_URL_PRIVATE" -o "$TMP/repo.zip"
+  if ! curl -fsSL -H "Authorization: Bearer ${GHTOKEN}" -L "$ZIP_URL_PRIVATE" -o "$TMP/repo.zip"; then
+    echo "ERROR: Failed to fetch private ZIP via API. Check token scopes and repo access."
+    exit 3
+  fi
+  echo "Downloaded private ZIP."
 }
 
 echo "Fetching ${REPO_OWNER}/${REPO_NAME}@${REF} ..."
 download_zip
 
-# --- install to /opt/erpnext-manager ----------------------------------------
 sudo rm -rf /opt/erpnext-manager
 sudo unzip -q "$TMP/repo.zip" -d /opt
 
-# Move versioned folder to a stable path (supports multiple archive name patterns)
 TARGET="$(bash -lc 'shopt -s nullglob; set -- /opt/*-'"${REPO_NAME}"'-* /opt/*_'"${REPO_NAME}"'-*; echo "$1"')"
 if [[ -z "$TARGET" ]]; then
   echo "Failed to locate extracted folder; aborting."
@@ -67,10 +63,7 @@ if [[ -z "$TARGET" ]]; then
 fi
 sudo mv "$TARGET" /opt/erpnext-manager
 
-# Normalize line endings & permissions (avoid /bin/sh parsing issues)
 sudo find /opt/erpnext-manager -type f -name "*.sh" -exec sed -i "s/\r$//" {} \; -exec chmod +x {} \;
 
-# --- launch with a real TTY so dialogs work when piped -----------------------
 cd /opt/erpnext-manager
-# If we were run via `curl | sudo bash`, STDIN isn't a TTY; attach one:
 exec sudo /opt/erpnext-manager/erpnext-manager.sh </dev/tty
